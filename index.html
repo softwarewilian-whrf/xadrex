@@ -124,11 +124,12 @@ let pc=null,net=null,mine=true,role='';
 const hasCS=typeof CompressionStream!=='undefined',say=t=>{$('ph').textContent=t};
 async function enc(o){const s=JSON.stringify(o);if(!hasCS)return'r'+btoa(s);const u=new Uint8Array(await new Response(new Blob([s]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());let b='';u.forEach(x=>b+=String.fromCharCode(x));return'z'+btoa(b)}
 async function dec(c){c=c.trim();const raw=atob(c.slice(1));if(c[0]==='r')return JSON.parse(raw);const u=Uint8Array.from(raw,x=>x.charCodeAt(0));return JSON.parse(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text())}
-function mkpc(){if(pc)pc.close();pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]})}
-const gathered=()=>new Promise(r=>{if(pc.iceGatheringState==='complete')return r();pc.onicegatheringstatechange=()=>pc.iceGatheringState==='complete'&&r();setTimeout(r,4000)});
+function mkpc(){if(pc)pc.close();pc=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},{urls:['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turns:openrelay.metered.ca:443?transport=tcp'],username:'openrelayproject',credential:'openrelayproject'}]});
+ pc.oniceconnectionstatechange=()=>{const s=pc.iceConnectionState;if(s==='failed')say('Falhou: a rede não permitiu a conexão. Isso é comum em 4G/5G. Tente os dois no mesmo Wi-Fi ou em outra rede e gere códigos novos.');else if(s==='checking')say('Conectando… aguarde alguns segundos.');else if(s==='connected'||s==='completed')say('Conectado!')}}
+const gathered=()=>new Promise(r=>{if(pc.iceGatheringState==='complete')return r();pc.onicegatheringstatechange=()=>pc.iceGatheringState==='complete'&&r();setTimeout(r,6000)});
 function bind(c){c.onopen=()=>{net=c;ai=false;$('md').textContent='Modo: online';th=mine?0:Math.PI;reset();$('pn').hidden=true};
  c.onmessage=e=>{let d;try{d=JSON.parse(e.data)}catch(x){return}if(d.k==='n')reset();else if(d.k==='m'&&G.w!==mine){const m=L.find(x=>x.f===d.f&&x.t===d.t);if(m)play(m)}};
- c.onclose=()=>{if(net===c){net=null;$('st').textContent='Adversário desconectou.'}}}
+ c.onclose=()=>{if(net===c){net=null;$('st').textContent='Adversário desconectou.'}};if(c.readyState==='open')c.onopen()}
 async function host(){mkpc();mine=true;bind(pc.createDataChannel('x'));await pc.setLocalDescription(await pc.createOffer());await gathered();$('o').value=await enc(pc.localDescription)}
 async function join(){mkpc();mine=false;pc.ondatachannel=e=>bind(e.channel);await pc.setRemoteDescription(await dec($('i').value));await pc.setLocalDescription(await pc.createAnswer());await gathered();$('o').value=await enc(pc.localDescription)}
 $('ol').onclick=()=>{$('pn').hidden=!$('pn').hidden};
