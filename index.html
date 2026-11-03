@@ -16,9 +16,21 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%}
 #hint{font-size:12px;opacity:.7}
 button{font:inherit;font-weight:600;background:var(--pn);color:var(--fg);border:1px solid var(--ac);border-radius:20px;padding:9px 14px;cursor:pointer;backdrop-filter:blur(6px)}
 button:active{background:var(--ac);color:#fff}
+#pn{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(92vw,420px);max-height:80%;overflow:auto;background:var(--bg);color:var(--fg);border:1px solid var(--ac);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:8px;box-shadow:0 8px 30px rgba(0,0,0,.35);font-size:14px}
+#pn[hidden]{display:none}
+#pn textarea{width:100%;height:64px;box-sizing:border-box;font-size:11px;resize:none;background:var(--pn);color:var(--fg);border:1px solid var(--ac);border-radius:8px;padding:6px}
+#pn .r{display:flex;gap:8px;flex-wrap:wrap}
+#ph{font-size:13px;opacity:.85}
 </style></head><body>
 <div class="bar" id="top"><div id="st"></div><div id="hint">Arraste para girar · pinça/scroll para zoom · toque para jogar</div></div>
-<div class="bar" id="bot"><button id="nw">Novo jogo</button><button id="un">Desfazer</button><button id="md"></button><button id="fl">Girar mesa</button></div>
+<div class="bar" id="bot"><button id="nw">Novo jogo</button><button id="un">Desfazer</button><button id="md"></button><button id="fl">Girar mesa</button><button id="ol">Online</button></div>
+<div id="pn" hidden><b>Jogar online (2 pessoas)</b>
+<div class="r"><button id="cr">Criar sala (brancas)</button><button id="en">Entrar (pretas)</button></div>
+<div id="ph">Um cria a sala e envia o código; o outro entra, cola o código e devolve a resposta.</div>
+<label>Seu código (envie ao amigo):</label><textarea id="o" readonly></textarea>
+<button id="cp">Copiar código</button>
+<label>Código recebido do amigo:</label><textarea id="i"></textarea>
+<div class="r"><button id="cn">Conectar</button><button id="xx">Fechar / sair</button></div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const isW=p=>p!==''&&p<'a';
@@ -94,18 +106,37 @@ function hl(){for(let i=0;i<64;i++){const c=sq[i].material.color;c.set(((i>>3)+(
  while(mk2.children.length)mk2.remove(mk2.children[0]);
  for(const m of moves){const o=new THREE.Mesh(mg,new THREE.MeshBasicMaterial({color:G.b[m.t]||m.ep?0xd94040:0x3a9a4a}));o.position.set((m.t&7)-3.5,.14,(m.t>>3)-3.5);o.userData.sq=m.t;mk2.add(o)}}
 function status(){L=legal(G);const chk=att(G.b,G.b.indexOf(G.w?'K':'k'),!G.w);over=!L.length;
- $('st').textContent=over?(chk?'Xeque-mate! '+(G.w?'Pretas':'Brancas')+' vencem.':'Empate por afogamento.'):(ai?(G.w?'Sua vez (brancas)':'Computador pensando…'):(G.w?'Vez das brancas':'Vez das pretas'))+(chk?' — xeque!':'')}
+ $('st').textContent=over?(chk?'Xeque-mate! '+(G.w?'Pretas':'Brancas')+' vencem.':'Empate por afogamento.'):(net?((G.w===mine?'Sua vez':'Vez do adversário')+(mine?' · você é brancas':' · você é pretas')):ai?(G.w?'Sua vez (brancas)':'Computador pensando…'):(G.w?'Vez das brancas':'Vez das pretas'))+(chk?' — xeque!':'')}
 function play(m){hist.push({G,last});G=apply(G,m);last=m;sel=-1;moves=[];draw(m);status();hl();
  if(!over&&ai&&!G.w){busy=true;setTimeout(()=>{let best=null,bs=1e9;for(const x of L){const v=srch(apply(G,x),2,-1e9,1e9)+Math.random()*8;if(v<bs){bs=v;best=x}}busy=false;if(best)play(best)},350)}}
-function click(i){if(over||busy||(ai&&!G.w))return;
- if(sel>=0){const m=moves.find(x=>x.t===i);if(m){play(m);return}}
+function click(i){if(over||busy||(ai&&!G.w)||(net&&G.w!==mine))return;
+ if(sel>=0){const m=moves.find(x=>x.t===i);if(m){if(net)net.send(JSON.stringify({k:'m',f:m.f,t:m.t}));play(m);return}}
  if(G.b[i]&&isW(G.b[i])===G.w){sel=i;moves=L.filter(x=>x.f===i)}else{sel=-1;moves=[]}hl()}
 function reset(){G=init();hist=[];sel=-1;moves=[];last=null;busy=false;draw();status();hl()}
-$('nw').onclick=reset;
-$('un').onclick=()=>{if(busy)return;let h=hist.pop();if(!h)return;G=h.G;last=h.last;if(ai&&!G.w&&hist.length){h=hist.pop();G=h.G;last=h.last}sel=-1;moves=[];draw();status();hl()};
-$('md').onclick=()=>{ai=!ai;$('md').textContent=ai?'Modo: vs Computador':'Modo: 2 jogadores';reset()};
+$('nw').onclick=()=>{if(net)net.send('{"k":"n"}');reset()};
+$('un').onclick=()=>{if(busy||net)return;let h=hist.pop();if(!h)return;G=h.G;last=h.last;if(ai&&!G.w&&hist.length){h=hist.pop();G=h.G;last=h.last}sel=-1;moves=[];draw();status();hl()};
+$('md').onclick=()=>{if(net){try{net.close()}catch(e){}net=null}ai=!ai;$('md').textContent=ai?'Modo: vs Computador':'Modo: 2 jogadores';reset()};
 $('fl').onclick=()=>{th+=Math.PI};
 $('md').textContent='Modo: vs Computador';
+
+// ---------- online (WebRTC ponto a ponto, sem servidor) ----------
+let pc=null,net=null,mine=true,role='';
+const hasCS=typeof CompressionStream!=='undefined',say=t=>{$('ph').textContent=t};
+async function enc(o){const s=JSON.stringify(o);if(!hasCS)return'r'+btoa(s);const u=new Uint8Array(await new Response(new Blob([s]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());let b='';u.forEach(x=>b+=String.fromCharCode(x));return'z'+btoa(b)}
+async function dec(c){c=c.trim();const raw=atob(c.slice(1));if(c[0]==='r')return JSON.parse(raw);const u=Uint8Array.from(raw,x=>x.charCodeAt(0));return JSON.parse(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text())}
+function mkpc(){if(pc)pc.close();pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]})}
+const gathered=()=>new Promise(r=>{if(pc.iceGatheringState==='complete')return r();pc.onicegatheringstatechange=()=>pc.iceGatheringState==='complete'&&r();setTimeout(r,4000)});
+function bind(c){c.onopen=()=>{net=c;ai=false;$('md').textContent='Modo: online';th=mine?0:Math.PI;reset();$('pn').hidden=true};
+ c.onmessage=e=>{let d;try{d=JSON.parse(e.data)}catch(x){return}if(d.k==='n')reset();else if(d.k==='m'&&G.w!==mine){const m=L.find(x=>x.f===d.f&&x.t===d.t);if(m)play(m)}};
+ c.onclose=()=>{if(net===c){net=null;$('st').textContent='Adversário desconectou.'}}}
+async function host(){mkpc();mine=true;bind(pc.createDataChannel('x'));await pc.setLocalDescription(await pc.createOffer());await gathered();$('o').value=await enc(pc.localDescription)}
+async function join(){mkpc();mine=false;pc.ondatachannel=e=>bind(e.channel);await pc.setRemoteDescription(await dec($('i').value));await pc.setLocalDescription(await pc.createAnswer());await gathered();$('o').value=await enc(pc.localDescription)}
+$('ol').onclick=()=>{$('pn').hidden=!$('pn').hidden};
+$('cr').onclick=async()=>{role='h';say('Gerando código…');try{await host();say('1) Envie o código acima ao amigo. 2) Cole a resposta dele abaixo e clique Conectar.')}catch(e){say('Erro: '+e.message)}};
+$('en').onclick=()=>{role='g';$('o').value='';say('Cole abaixo o código do amigo e clique Conectar; depois devolva a resposta que aparecer acima.')};
+$('cn').onclick=async()=>{try{if(role==='h'){await pc.setRemoteDescription(await dec($('i').value));say('Conectando…')}else if(role==='g'){await join();say('Envie o código acima de volta ao amigo e aguarde a conexão.')}else say('Escolha Criar sala ou Entrar primeiro.')}catch(e){say('Código inválido ou erro: '+e.message)}};
+$('cp').onclick=()=>{$('o').select();try{navigator.clipboard.writeText($('o').value)}catch(e){document.execCommand('copy')}};
+$('xx').onclick=()=>{if(net){net.close();net=null}if(pc){pc.close();pc=null}$('pn').hidden=true};
 
 // ---------- camera & input ----------
 let th=0,ph=1,zoom=1;
