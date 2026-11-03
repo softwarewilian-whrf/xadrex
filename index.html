@@ -18,19 +18,20 @@ button{font:inherit;font-weight:600;background:var(--pn);color:var(--fg);border:
 button:active{background:var(--ac);color:#fff}
 #pn{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(92vw,420px);max-height:80%;overflow:auto;background:var(--bg);color:var(--fg);border:1px solid var(--ac);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:8px;box-shadow:0 8px 30px rgba(0,0,0,.35);font-size:14px}
 #pn[hidden]{display:none}
-#pn textarea{width:100%;height:64px;box-sizing:border-box;font-size:11px;resize:none;background:var(--pn);color:var(--fg);border:1px solid var(--ac);border-radius:8px;padding:6px}
+#pn input{width:100%;box-sizing:border-box;font:inherit;background:var(--pn);color:var(--fg);border:1px solid var(--ac);border-radius:8px;padding:11px;letter-spacing:3px;text-transform:uppercase}#roomCode{font-size:26px;font-weight:800;letter-spacing:5px;text-align:center;padding:10px;border:1px dashed var(--ac);border-radius:10px;user-select:all}
 #pn .r{display:flex;gap:8px;flex-wrap:wrap}
 #ph{font-size:13px;opacity:.85}
 </style></head><body>
 <div class="bar" id="top"><div id="st"></div><div id="hint">Arraste para girar · pinça/scroll para zoom · toque para jogar</div></div>
 <div class="bar" id="bot"><button id="nw">Novo jogo</button><button id="un">Desfazer</button><button id="md"></button><button id="fl">Girar mesa</button><button id="ol">Online</button></div>
 <div id="pn" hidden><b>Jogar online (2 pessoas)</b>
-<div class="r"><button id="cr">Criar sala (brancas)</button><button id="en">Entrar (pretas)</button></div>
-<div id="ph">Um cria a sala e envia o código; o outro entra, cola o código e devolve a resposta.</div>
-<label>Seu código (envie ao amigo):</label><textarea id="o" readonly></textarea>
+<div class="r"><button id="cr">Criar partida</button><button id="en">Entrar com código</button></div>
+<div id="ph">Crie uma partida e compartilhe o código de 6 caracteres. Seu adversário deve digitá-lo para entrar.</div>
+<label>Código da sua partida:</label><div id="roomCode">------</div>
 <button id="cp">Copiar código</button>
-<label>Código recebido do amigo:</label><textarea id="i"></textarea>
-<div class="r"><button id="cn">Conectar</button><button id="xx">Fechar / sair</button></div></div>
+<label>Digite o código recebido:</label><input id="i" maxlength="6" autocomplete="off" placeholder="ABC123" />
+<div class="r"><button id="cn">Entrar na partida</button><button id="xx">Fechar / sair</button></div></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 const isW=p=>p!==''&&p<'a';
@@ -119,26 +120,45 @@ $('md').onclick=()=>{if(net){try{net.close()}catch(e){}net=null}ai=!ai;$('md').t
 $('fl').onclick=()=>{th+=Math.PI};
 $('md').textContent='Modo: vs Computador';
 
-// ---------- online (WebRTC ponto a ponto, sem servidor) ----------
-let pc=null,net=null,mine=true,role='';
-const hasCS=typeof CompressionStream!=='undefined',say=t=>{$('ph').textContent=t};
-async function enc(o){const s=JSON.stringify(o);if(!hasCS)return'r'+btoa(s);const u=new Uint8Array(await new Response(new Blob([s]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());let b='';u.forEach(x=>b+=String.fromCharCode(x));return'z'+btoa(b)}
-async function dec(c){c=c.trim();const raw=atob(c.slice(1));if(c[0]==='r')return JSON.parse(raw);const u=Uint8Array.from(raw,x=>x.charCodeAt(0));return JSON.parse(await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text())}
-function mkpc(){if(pc)pc.close();pc=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},{urls:['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turns:openrelay.metered.ca:443?transport=tcp'],username:'openrelayproject',credential:'openrelayproject'}]});
- pc.oniceconnectionstatechange=()=>{const s=pc.iceConnectionState;if(s==='failed')say('Falhou: a rede não permitiu a conexão. Isso é comum em 4G/5G. Tente os dois no mesmo Wi-Fi ou em outra rede e gere códigos novos.');else if(s==='checking')say('Conectando… aguarde alguns segundos.');else if(s==='connected'||s==='completed')say('Conectado!')}}
-const gathered=()=>new Promise(r=>{if(pc.iceGatheringState==='complete')return r();pc.onicegatheringstatechange=()=>pc.iceGatheringState==='complete'&&r();setTimeout(r,6000)});
-function bind(c){c.onopen=()=>{net=c;ai=false;$('md').textContent='Modo: online';th=mine?0:Math.PI;reset();$('pn').hidden=true};
+// ---------- online: Supabase Realtime + WebRTC ----------
+// A chave publishable é pública. A segurança real deve ser aplicada com RLS no Supabase.
+const SUPABASE_URL='https://sglmlcwzzjlrqthkmovq.supabase.co';
+const SUPABASE_KEY='sb_publishable_mpAQqufnSqc-3fhuB8JZUQ_eJ-wdAEx';
+if(!window.supabase)throw new Error('Não foi possível carregar a biblioteca Supabase. Verifique sua conexão.');
+const sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+let pc=null,net=null,mine=true,role='',roomId=null,roomCode='',roomChannel=null,roomPoll=null;
+const say=t=>{$('ph').textContent=t};
+const makeId=()=>crypto.randomUUID?crypto.randomUUID():('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return(c==='x'?r:(r&3|8)).toString(16)}));
+let clientId=sessionStorage.getItem('xadrez3d_client_id');if(!clientId){clientId=makeId();sessionStorage.setItem('xadrez3d_client_id',clientId)}
+const makeCode=()=>Array.from(crypto.getRandomValues(new Uint8Array(6)),n=>'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[n%32]).join('');
+const gathered=()=>new Promise(resolve=>{if(!pc||pc.iceGatheringState==='complete')return resolve();let done=false;const finish=()=>{if(done)return;done=true;pc&&pc.removeEventListener('icegatheringstatechange',check);resolve()};const check=()=>{if(pc&&pc.iceGatheringState==='complete')finish()};pc.addEventListener('icegatheringstatechange',check);setTimeout(finish,10000)});
+function closeSignaling(){if(roomChannel){sb.removeChannel(roomChannel);roomChannel=null}if(roomPoll){clearInterval(roomPoll);roomPoll=null}}
+function mkpc(){if(pc){try{pc.close()}catch(e){}}pc=new RTCPeerConnection({iceServers:[{urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']},{urls:['turn:openrelay.metered.ca:80','turn:openrelay.metered.ca:443','turns:openrelay.metered.ca:443?transport=tcp'],username:'openrelayproject',credential:'openrelayproject'}]});
+ pc.oniceconnectionstatechange=()=>{const s=pc.iceConnectionState;if(s==='failed')say('A conexão falhou. Gere outra sala e tente novamente; algumas redes exigem um servidor TURN próprio.');else if(s==='checking')say('Conectando os jogadores…');else if(s==='connected'||s==='completed')say('Conectado! A partida vai começar.')};
+ pc.onconnectionstatechange=()=>{if(pc&&pc.connectionState==='disconnected')say('Conexão interrompida. Aguardando o adversário…')}}
+function bind(c){c.onopen=async()=>{net=c;ai=false;$('md').textContent='Modo: online';th=mine?0:Math.PI;reset();$('pn').hidden=true;say('Partida conectada!');if(roomId)await sb.from('salas_xadrez').update({status:'em_andamento'}).eq('id',roomId)};
  c.onmessage=e=>{let d;try{d=JSON.parse(e.data)}catch(x){return}if(d.k==='n')reset();else if(d.k==='m'&&G.w!==mine){const m=L.find(x=>x.f===d.f&&x.t===d.t);if(m)play(m)}};
- c.onclose=()=>{if(net===c){net=null;$('st').textContent='Adversário desconectou.'}};if(c.readyState==='open')c.onopen()}
-async function host(){mkpc();mine=true;bind(pc.createDataChannel('x'));await pc.setLocalDescription(await pc.createOffer());await gathered();$('o').value=await enc(pc.localDescription)}
-async function join(){mkpc();mine=false;pc.ondatachannel=e=>bind(e.channel);await pc.setRemoteDescription(await dec($('i').value));await pc.setLocalDescription(await pc.createAnswer());await gathered();$('o').value=await enc(pc.localDescription)}
+ c.onclose=()=>{if(net===c){net=null;$('st').textContent='Adversário desconectou.';say('O adversário desconectou.')}};if(c.readyState==='open')c.onopen()}
+async function watchHostRoom(){closeSignaling();roomChannel=sb.channel('xadrez-room-'+roomId).on('postgres_changes',{event:'UPDATE',schema:'public',table:'salas_xadrez',filter:'id=eq.'+roomId},async payload=>{const answer=payload.new&&payload.new.resposta;if(answer&&pc&&pc.signalingState==='have-local-offer'){try{await pc.setRemoteDescription(new RTCSessionDescription(answer));say('Resposta recebida. Estabelecendo conexão…')}catch(e){say('Não foi possível concluir a conexão: '+e.message)}}}).subscribe();
+ // Consulta periódica de segurança caso a entrega Realtime demore ou não esteja habilitada.
+ roomPoll=setInterval(async()=>{if(!roomId||!pc||pc.signalingState!=='have-local-offer')return;const {data,error}=await sb.from('salas_xadrez').select('resposta').eq('id',roomId).maybeSingle();if(!error&&data&&data.resposta){try{await pc.setRemoteDescription(new RTCSessionDescription(data.resposta));say('Resposta recebida. Estabelecendo conexão…');closeSignaling()}catch(e){}}},1800)}
+async function host(){closeSignaling();if(net){try{net.close()}catch(e){}net=null}mkpc();mine=true;role='h';ai=false;bind(pc.createDataChannel('xadrez3d'));say('Preparando partida e gerando código…');
+ await pc.setLocalDescription(await pc.createOffer());await gathered();
+ let created=null,lastError=null;
+ for(let attempt=0;attempt<5&&!created;attempt++){const code=makeCode();const {data,error}=await sb.from('salas_xadrez').insert({codigo:code,jogador1_id:clientId,oferta:pc.localDescription.toJSON(),status:'aguardando'}).select('id,codigo').single();if(!error){created=data;roomId=data.id;roomCode=data.codigo}else lastError=error}
+ if(!created)throw new Error(lastError?.message||'Não foi possível criar a sala.');
+ $('roomCode').textContent=roomCode;await watchHostRoom();say('Partida criada! Compartilhe o código '+roomCode+'. Estamos aguardando o segundo jogador.');$('cp').disabled=false}
+async function join(){closeSignaling();if(net){try{net.close()}catch(e){}net=null}const code=$('i').value.trim().toUpperCase();if(!/^[A-Z0-9]{6}$/.test(code))throw new Error('Digite um código válido de 6 caracteres.');say('Procurando a partida…');
+ const {data:room,error}=await sb.from('salas_xadrez').select('*').eq('codigo',code).gt('expira_em',new Date().toISOString()).maybeSingle();if(error)throw error;if(!room)throw new Error('Partida não encontrada ou expirada. Confira o código.');if(room.jogador1_id===clientId)throw new Error('Você não pode entrar na própria partida na mesma sessão.');if(room.jogador2_id)throw new Error('Essa partida já tem dois jogadores.');if(!room.oferta)throw new Error('A sala ainda não está pronta. Peça ao criador para gerar outro código.');
+ roomId=room.id;roomCode=room.codigo;mine=false;role='g';mkpc();pc.ondatachannel=e=>bind(e.channel);await pc.setRemoteDescription(new RTCSessionDescription(room.oferta));const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await gathered();
+ const {data:updated,error:updateError}=await sb.from('salas_xadrez').update({jogador2_id:clientId,resposta:pc.localDescription.toJSON(),status:'conectando'}).eq('id',room.id).is('jogador2_id',null).select('id').maybeSingle();if(updateError)throw updateError;if(!updated)throw new Error('Outro jogador entrou nessa sala primeiro. Gere um novo código.');say('Resposta enviada! Aguardando o criador concluir a conexão…')}
 $('ol').onclick=()=>{$('pn').hidden=!$('pn').hidden};
-$('cr').onclick=async()=>{role='h';say('Gerando código…');try{await host();say('1) Envie o código acima ao amigo. 2) Cole a resposta dele abaixo e clique Conectar.')}catch(e){say('Erro: '+e.message)}};
-$('en').onclick=()=>{role='g';$('o').value='';say('Cole abaixo o código do amigo e clique Conectar; depois devolva a resposta que aparecer acima.')};
-$('cn').onclick=async()=>{try{if(role==='h'){await pc.setRemoteDescription(await dec($('i').value));say('Conectando…')}else if(role==='g'){await join();say('Envie o código acima de volta ao amigo e aguarde a conexão.')}else say('Escolha Criar sala ou Entrar primeiro.')}catch(e){say('Código inválido ou erro: '+e.message)}};
-$('cp').onclick=()=>{$('o').select();try{navigator.clipboard.writeText($('o').value)}catch(e){document.execCommand('copy')}};
-$('xx').onclick=()=>{if(net){net.close();net=null}if(pc){pc.close();pc=null}$('pn').hidden=true};
-
+$('cr').onclick=async()=>{try{await host()}catch(e){say('Erro ao criar partida: '+e.message)}};
+$('en').onclick=()=>{role='g';$('i').focus();say('Digite o código de 6 caracteres enviado pelo outro jogador e clique em Entrar na partida.')};
+$('cn').onclick=async()=>{try{await join()}catch(e){say('Não foi possível entrar: '+e.message);if(pc){try{pc.close()}catch(x){}pc=null}}};
+$('cp').onclick=async()=>{if(!roomCode)return;try{await navigator.clipboard.writeText(roomCode);say('Código '+roomCode+' copiado!')}catch(e){const el=document.createElement('textarea');el.value=roomCode;document.body.appendChild(el);el.select();document.execCommand('copy');el.remove();say('Código '+roomCode+' copiado!')}};
+$('xx').onclick=async()=>{closeSignaling();if(net){net.close();net=null}if(pc){pc.close();pc=null}if(roomId&&role==='h'){await sb.from('salas_xadrez').update({status:'finalizada'}).eq('id',roomId)}roomId=null;roomCode='';role='';$('roomCode').textContent='------';$('pn').hidden=true;say('Você saiu da sala.');ai=true;$('md').textContent='Modo: vs Computador';reset()};
+$('i').addEventListener('input',()=>{$('i').value=$('i').value.toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,6)});
 // ---------- camera & input ----------
 let th=0,ph=1,zoom=1;
 const ptr=new Map(),rc=new THREE.Raycaster(),mv=new THREE.Vector2();let sx,sy,moved=0,pd0=0;
